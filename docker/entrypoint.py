@@ -12,7 +12,7 @@ import signal
 import time
 
 PYTHON3 = '/usr/bin/python3'
-dbPath = os.path.join(os.sep, 'home', 'py-kms', 'db') # Do not include the database file name, as we must correct the folder permissions (the db file is recursively reachable)
+dbPath = os.path.join(os.sep, 'kms', 'var') # Do not include the database file name, as we must correct the folder permissions (the db file is recursively reachable)
 
 def change_uid_grp(logger):
   if os.geteuid() != 0:
@@ -24,7 +24,7 @@ def change_uid_grp(logger):
   gid = int(user_grp_db_entries.gr_gid)
   new_gid = int(os.getenv('GID', str(gid)))
   new_uid = int(os.getenv('UID', str(uid)))
-  os.chown("/home/py-kms", new_uid, new_gid)
+  os.chown("/opt/py-kms", new_uid, new_gid)
   os.chown("/usr/bin/start.py", new_uid, new_gid)
   if os.path.isdir(dbPath):
     # Corret permissions recursively, as to access the database file, also its parent folder must be accessible
