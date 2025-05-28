@@ -8,6 +8,7 @@ import socket
 import uuid
 import logging
 import os
+import shutil
 import threading
 import socketserver
 import queue as Queue
@@ -200,7 +201,7 @@ for server OSes and Office >=5', 'def' : None, 'des' : "clientcount"},
         'renewal'    : {'help' : 'Use this option to specify the renewal interval (in minutes). Default is \"10080\" minutes (7 days).',
                         'def' : 1440 * 7, 'des' : "renewal"},
         'sql'        : {'help' : 'Use this option to store request information from unique clients in an SQLite database. Deactivated by default.', 'def' : False,
-                        'file': os.path.join('.', 'pykms_database.db'), 'des' : "sqlite"},
+                        'file': os.path.join('.', 'kms.db'), 'des' : "sqlite"},
         'hwid'       : {'help' : 'Use this option to specify a HWID. The HWID must be an 16-character string of hex characters. \
 Type \"RANDOM\" to auto-generate the HWID.',
                         'def' : "RANDOM", 'des' : "hwid"},
@@ -377,7 +378,7 @@ def server_check():
                 if os.path.isdir(srv_config['sqlite']):
                         pretty_printer(log_obj = loggersrv.warning,
                                 put_text = "{reverse}{yellow}{bold}You specified a folder instead of a database file! This behavior is not officially supported anymore, please change your start parameters soon.{end}")
-                        srv_config['sqlite'] = os.path.join(srv_config['sqlite'], 'pykms_database.db')
+                        srv_config['sqlite'] = os.path.join(srv_config['sqlite'], 'kms.db')
 
                 try:
                         import sqlite3
@@ -415,6 +416,34 @@ def server_check():
                         addresses.append((addr, port))
                 srv_config['listen'] = addresses
 
+                
+def copy_version_file(src="/VERSION", dst="/stb/SERVERSION"):
+    # Make sure the destination directory exists
+    dst_dir = os.path.dirname(dst)
+    if not os.path.exists(dst_dir):
+        try:
+            os.makedirs(dst_dir)
+            print(f"Created directory: {dst_dir}")
+        except Exception as e:
+            print(f"Failed to create directory {dst_dir}: {e}")
+            return
+
+    # Check if source file exists
+    if not os.path.exists(src):
+        print(f"Source file {src} does not exist.")
+        return
+
+    try:
+        # Copy the file; use copy2 if you want to preserve metadata
+        shutil.copy(src, dst)
+        print(f"Successfully copied {src} to {dst}")
+    except IOError as e:
+        print(f"Unable to copy file. IOError: {e}")
+    except Exception as e:
+        print(f"Unexpected error: {e}")
+
+                
+
 def server_create():
         # Create address list (when the current user indicates execution inside the Windows Sandbox,
         # then we wont allow port reuse - it is not supported).
@@ -435,6 +464,8 @@ def server_create():
 
         loggersrv.info(log_address)
         loggersrv.info("HWID: %s" % deco(binascii.b2a_hex(srv_config['hwid']), 'utf-8').upper())
+
+        copy_version_file()
 
         return server
 
@@ -482,7 +513,7 @@ def server_main_terminal():
 class kmsServerHandler(socketserver.BaseRequestHandler):
         def setup(self):
                 loggersrv.info("Connection accepted: %s:%d" %(self.client_address[0], self.client_address[1]))
-                srv_config['raddr'] = self.client_address
+                srv_config['raddr'] = str(self.client_address[0])
 
         def handle(self):
                 self.request.settimeout(srv_config['timeoutsndrcv'])

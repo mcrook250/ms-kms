@@ -1,4 +1,5 @@
-import os, uuid, datetime
+import os, uuid, datetime, socket, urllib.request, json
+from packaging import version
 from flask import Flask, render_template
 from pykms_Sql import sql_get_all
 from pykms_DB2Dict import kmsDB2Dict
@@ -44,19 +45,59 @@ def _get_kms_items_cache():
                     raise NotImplementedError(f'Unknown element: {element}')
     return _kms_items, _kms_items_noglvk
 
+def is_port_open(host, port, timeout=3):
+    """
+    Checks if the given host and port are open and responding.
+    Uses a socket connection attempt with a timeout.
+    Returns True if connection is successful, False otherwise.
+    """
+    try:
+        with socket.create_connection((host, port), timeout):
+            return True
+    except (socket.timeout, socket.error):
+        return False
+
+
+  
 app = Flask('pykms_webui')
 app.jinja_env.globals['start_time'] = datetime.datetime.now()
 app.jinja_env.globals['get_serve_count'] = _get_serve_count
 app.jinja_env.globals['random_uuid'] = _random_uuid
-app.jinja_env.globals['version_info'] = None
+app.jinja_env.globals['version_info'] = None # KMS Server version
+app.jinja_env.globals['rev_version'] = '0.0.0' # github version for update
+app.jinja_env.globals['gui_version'] = None # WebUI server & files 'v1.3.7'
+app.jinja_env.globals['rpc_health'] = None
 
-_version_info_path = os.environ.get('PYKMS_VERSION_PATH', '../VERSION')
-if os.path.exists(_version_info_path):
-    with open(_version_info_path, 'r') as f:
+host_to_check = 'kms'
+port_to_check = 1688
+
+repo = "mcrook250/ms-kms"
+url = f"https://api.github.com/repos/{repo}/tags"
+
+with urllib.request.urlopen(url) as response:
+    data = response.read()
+    tags = json.loads(data)
+
+if tags:
+    latest_version = tags[0]["name"]  # Assuming the first tag is the latest
+    app.jinja_env.globals['rev_version'] = latest_version
+else:
+    app.jinja_env.globals['rev_version'] = "0.0.0"
+
+
+_serv_version_info_path = '/kms/var/SERVERSION' # os.environ.get('PYKMS_VERSION_PATH', '../kms/var/SERVERSION')
+if os.path.exists(_serv_version_info_path):
+    with open(_serv_version_info_path, 'r') as f:
         app.jinja_env.globals['version_info'] = {
             'hash': f.readline().strip(),
             'branch': f.readline().strip()
         }
+
+_version_info_path = os.environ.get('PYKMS_VERSION_PATH', '../VERSION')
+if os.path.exists(_version_info_path):
+    with open(_version_info_path, 'r') as j:
+        app.jinja_env.globals['gui_version'] = j.readline().strip()
+        
 
 _dbEnvVarName = 'PYKMS_SQLITE_DB_PATH'
 def _env_check():
@@ -81,8 +122,11 @@ def root():
     except Exception as e:
         error = f'Error while loading database: {e}'
     countClients = len(clients) if clients else 0
+    noglvk = _get_kms_items_cache()
     countClientsWindows = len([c for c in clients if c['applicationId'] == 'Windows']) if clients else 0
     countClientsOffice = countClients - countClientsWindows
+    port_open = is_port_open(host_to_check, port_to_check)
+    app.jinja_env.globals['rpc_health'] = port_open
     return render_template(
         'clients.html',
         path='/',
@@ -91,6 +135,7 @@ def root():
         count_clients=countClients,
         count_clients_windows=countClientsWindows,
         count_clients_office=countClientsOffice,
+        filtered=noglvk,
         count_projects=sum([len(entries) for entries in _get_kms_items_cache()[0].values()])
     ), 200 if error is None else 500
 
@@ -123,6 +168,43 @@ def license():
             license=f.read()
         )
 
+@app.route('/status')
+def status():
+    _increase_serve_count()
+    error = None
+    # Get the db name / path
+    dbPath = None
+    if _dbEnvVarName in os.environ:
+        dbPath = os.environ.get(_dbEnvVarName)
+    else:
+        error = f'Environment variable is not set: {_dbEnvVarName}'
+    # Fetch all clients from the database.
+    clients = None
+    try:
+        if dbPath:
+            clients = sql_get_all(dbPath)
+    except Exception as e:
+        error = f'Error while loading database: {e}'
+    countClients = len(clients) if clients else 0
+    noglvk = _get_kms_items_cache()
+    countClientsWindows = len([c for c in clients if c['applicationId'] == 'Windows']) if clients else 0
+    countClientsOffice = countClients - countClientsWindows
+    port_open = is_port_open(host_to_check, port_to_check)
+    app.jinja_env.globals['rpc_health'] = port_open
+
+    return render_template(
+        'status.html',
+        path='/status/',
+        error=error,
+        clients=clients,
+        count_clients=countClients,
+        count_clients_windows=countClientsWindows,
+        count_clients_office=countClientsOffice,
+        filtered=noglvk,
+        count_projects=sum([len(entries) for entries in _get_kms_items_cache()[0].values()])
+    )
+        
+        
 @app.route('/products')
 def products():
     _increase_serve_count()
