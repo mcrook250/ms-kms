@@ -14,6 +14,9 @@ import socketserver
 import queue as Queue
 import selectors
 from time import monotonic as time
+import datetime
+import time
+
 
 import pykms_RpcBind, pykms_RpcRequest
 from pykms_RpcBase import rpcBase
@@ -23,7 +26,7 @@ from pykms_Misc import KmsParser, KmsParserException, KmsParserHelp
 from pykms_Misc import kms_parser_get, kms_parser_check_optionals, kms_parser_check_positionals, kms_parser_check_connect
 from pykms_Format import enco, deco, pretty_printer, justify
 from pykms_Connect import MultipleListener
-from pykms_Sql import sql_initialize
+from pykms_Sql import sql_initialize, sql_get_all, sql_delete_record
 
 srv_version             = "py-kms_2020-10-01"
 __license__             = "The Unlicense"
@@ -417,7 +420,7 @@ def server_check():
                 srv_config['listen'] = addresses
 
                 
-def copy_version_file(src="/VERSION", dst="/stb/SERVERSION"):
+def copy_version_file(src="/VERSION", dst="/kms/var/SERVERSION"):
     # Make sure the destination directory exists
     dst_dir = os.path.dirname(dst)
     if not os.path.exists(dst_dir):
@@ -442,8 +445,84 @@ def copy_version_file(src="/VERSION", dst="/stb/SERVERSION"):
     except Exception as e:
         print(f"Unexpected error: {e}")
 
-                
 
+def _stale_record_cleaner():
+    """
+    Runs once a day. Deletes any client whose lastRequestTime
+    is older than RENEWALINTERVAL days.
+    """
+
+    base = int(os.environ.get('RENEWALINTERVAL', 190))
+    # add 30 days of extra grace
+    days = base + 30
+
+    dbPath = srv_config.get('sqlite')
+    if not dbPath:
+        loggersrv.warning("Stale-record cleaner disabled: no sqlite DB configured.")
+        return
+    
+    first_run = True
+    while True:
+      
+        if first_run:
+            first_run = False
+        else:
+            loggersrv.info("[Auto‐Purge] Running stale record cleaning.")
+
+      
+        cutoff_dt = datetime.datetime.utcnow() - datetime.timedelta(days=days)
+
+        try:
+            clients = sql_get_all(dbPath) or []
+            for c in clients:
+                last = datetime.datetime.fromisoformat(c['lastRequestTime'])
+                if last < cutoff_dt:
+                    sql_delete_record(
+                        dbPath,
+                        c['clientMachineId'],
+                        c['applicationId'],
+                    )
+                    loggersrv.info(
+                        f"Auto-deleted stale record: {c['clientMachineId']} / {c['applicationId']}"
+                    )
+        except Exception as e:
+            loggersrv.error(f"Error in stale-record cleaner: {e}")
+
+        time.sleep(24 * 3600)
+        
+
+
+def update_auto_purge_flag():
+    """
+    Checks the AUTO_PURGE environment variable.
+    If enabled, create a flag file at /kms/var/auto_purge_enabled.
+    Otherwise, remove the flag file if it exists.
+    
+    The shared directory /kms/var allows other containers (e.g., your web server)
+    to see this flag and know whether auto purge is enabled.
+    """
+    # Interpret environment variable:
+    auto_purge = os.environ.get("AUTO_PURGE", "False").lower() in ("true", "1", "yes")
+    flag_file = "/kms/var/auto_purge_enabled"
+    
+    if auto_purge:
+        try:
+            with open(flag_file, "w") as f:
+                f.write("Auto Purge Enabled\n")
+            loggersrv.info(f"[Auto‐Purge] Flag file created at {flag_file}")
+        except Exception as e:
+            loggersrv.error(f"[Auto‐Purge] Failed to create flag file: {e}")
+    else:
+        try:
+            if os.path.exists(flag_file):
+                os.remove(flag_file)
+                loggersrv.info(f"[Auto‐Purge] Flag file {flag_file} removed")
+            else:
+                loggersrv.info("[Auto‐Purge] Auto purge disabled; flag file not present")
+        except Exception as e:
+            loggersrv.error(f"[Auto‐Purge] Failed to remove flag file: {e}")        
+        
+        
 def server_create():
         # Create address list (when the current user indicates execution inside the Windows Sandbox,
         # then we wont allow port reuse - it is not supported).
@@ -466,6 +545,7 @@ def server_create():
         loggersrv.info("HWID: %s" % deco(binascii.b2a_hex(srv_config['hwid']), 'utf-8').upper())
 
         copy_version_file()
+
 
         return server
 
@@ -499,6 +579,24 @@ def server_main_terminal():
         server_options()
         # Check options.
         server_check()
+        
+        auto_purge = os.environ.get('AUTO_PURGE', 'False').lower() in ('true', '1', 'yes')
+
+        if auto_purge:
+            cleaner_thread = threading.Thread(
+                target=_stale_record_cleaner,
+                name="Thread-StaleCleaner",
+                daemon=True
+            )
+            cleaner_thread.start()
+            loggersrv.info("[Auto‐Purge] Enabled: stale-record cleaner started.")
+        else:
+            loggersrv.info("[Auto‐Purge] Disabled (AUTO_PURGE is not True).")
+
+
+
+        update_auto_purge_flag()
+
         serverthread.checked = True
 
         # Run threaded server.
@@ -508,7 +606,7 @@ def server_main_terminal():
                 while serverthread.is_alive():
                         serverthread.join(timeout = 0.5)
         except (KeyboardInterrupt, SystemExit):
-                server_terminate(serverthread, exit_server = True, exit_thread = True)
+                        server_terminate(serverthread, exit_server = True, exit_thread = True)
 
 class kmsServerHandler(socketserver.BaseRequestHandler):
         def setup(self):
@@ -571,6 +669,8 @@ serverqueue = Queue.Queue(maxsize = 0)
 serverthread = server_thread(serverqueue, name = "Thread-Srv")
 serverthread.daemon = True
 serverthread.start()
+
+
 
 if __name__ == "__main__":
         server_main_terminal()

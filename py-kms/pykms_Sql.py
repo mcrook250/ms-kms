@@ -140,3 +140,24 @@ clientMachineId=? AND applicationId=?;", (str(response["kmsEpid"].decode('utf-16
                 if con:
                         con.commit()
                         con.close()
+                  
+def sql_delete_record(dbName, clientMachineId, appId):
+    con = None
+    try:
+        con = sqlite3.connect(dbName)
+        cur = con.cursor()
+        cur.execute(
+            "DELETE FROM clients WHERE clientMachineId = ? AND applicationId = ?",
+            (clientMachineId, appId)
+        )
+        loggersrv.debug(f"Record with clientMachineId '{clientMachineId}' and applicationId '{appId}' deleted.")
+    except sqlite3.Error as e:
+        pretty_printer(
+            log_obj=loggersrv.error,
+            to_exit=True,
+            put_text="{reverse}{red}{bold}Sqlite Error: %s. Exiting...{end}" % str(e)
+        )
+    finally:
+        if con:
+            con.commit()
+            con.close()
